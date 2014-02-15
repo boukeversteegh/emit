@@ -28,10 +28,9 @@ class Emit:
 		# Traverse Tree
 		# for entry in hct.traverse():
 
-	def getJson(self, node=None, pretty=True):
+	def getJson(self, node=None, pretty=True, depth=0):
 		if node is None:
 			node = self.repo.head.commit.tree
-
 
 		if pretty:
 			indent = '  '
@@ -42,7 +41,9 @@ class Emit:
 			keyvalue_separator = ':'
 			value_separator = ','
 
-			
+		if node.type == 'blob':
+			yield node.data_stream.read().rstrip('\n')
+
 		if node.type == 'tree':
 			islist = True
 			maxkeylen = 0
@@ -50,7 +51,6 @@ class Emit:
 				maxkeylen = max(maxkeylen, len(entry.name))
 				if str(index) != entry.name:
 					islist = False
-					#break
 
 			if islist:
 				yield '['
@@ -62,21 +62,19 @@ class Emit:
 
 			nentries = len(node)
 			for index, entry in enumerate(node):
-				yield indent * len(entry.path.split('/'))
+				yield indent * (depth+1)#len(entry.path.split('/'))
 
 				if not islist:
 					yield json.dumps(entry.name)
 					yield keyvalue_separator
 				
-				if pretty:
+				if pretty and entry.type == 'blob':
 					yield ' ' * (maxkeylen - len(entry.name))
 
-				if entry.type == 'tree':
-					for subentry in self.getJson(entry):
-						yield subentry
-
-				if entry.type == 'blob':
-					yield entry.data_stream.read().rstrip('\n')
+				# Recursive call
+				for subentry in self.getJson(entry, pretty=pretty, depth=depth+1):
+					#yield indent*depth
+					yield subentry
 
 				if index < nentries - 1:
 					yield value_separator
@@ -86,7 +84,7 @@ class Emit:
 				if pretty:
 					yield '\n'
 					if node.path != '':
-						yield indent * len(node.path.split('/'))
+						yield indent * (depth)#len(node.path.split('/'))
 				if islist:
 					yield ']'
 				else:
@@ -121,11 +119,13 @@ class Emit:
 		# index = git.IndexFile(self.repo, '.git/index') # Cannot call 'remove' on indices that do not represent the default git index
 
 		print 'removing'
-		index.remove([path])
+		index.remove([path], r=True)
+		index.write()
+
 		# print help(index.remove)
 
 		#print 'committing'
-		#new_commit = index.commit("removed %s" % path)
+		new_commit = index.commit("removed %s" % path)
 		# for i in index.entries:
 		# 	print i
 
@@ -152,94 +152,28 @@ class Emit:
 		hexsha	= istream.hexsha
 		mode	= 33188
 
-		try:
-			#tree = self.repo.head.commit.tree[directory]
-			pass
-		except KeyError:
-			pass
-			#tree = git.objects.tree.Tree(self.repo)
-			#tree = self.repo.head.commit.tree
+		index = self.repo.index
 
-			#tree.cache.add()
-
-			return
-
-		#print "TREE:"
-		#for node in tree:
-		#	print ' - %s' % node.name
-
-		#tree.cache.add(binsha, mode, name)
-		#tree.cache.set_done()
-
-		#tmp_index = git.IndexFile(self.repo, '.git/index')
-		tmp_index = git.IndexFile.from_tree(self.repo, self.repo.head.commit.tree)
-
-		print ' adding: %s' % hexsha
+		print ' adding: %s, %s' % (name, hexsha)
 		blob = self.repo.rev_parse(hexsha)
 		blob.path = path
 		blob.mode = mode
 
-		tmp_index.add([blob])
+		index.add([blob])
 
-		tree = tmp_index.write_tree()
+		# Not needed. Useful to get tree from modified index
+		#tree = index.write_tree()
 
-
-		# print tmp_index.path
-		print "INDEX:"
-		for e in tmp_index.entries:
-			print e
-
-
-		# Writing to index, and then committing from git commit, doesn't work :-S
-
+		# Flushing index changes index, committing. Will create new tree.
 		print " committing"
-		tmp_index.commit('added %s: %s'% (path, value))
-
-
-		##tmp_index.write('./git/index')
-
-		#return 
-		print "TREE:"
-		for entry in tree:
-			print ' - %s:\t%s' % (entry.name, entry.hexsha)
-
-			# self.render(tree)
-
-			# self.repo.index.write(tree)
-			# for e in self.repo.index.entries:
-			# 	print e
-
-		# ----------------
-		#assert istream.binsha is None
-
-		#print istream.binsha
-		#print istream.hexsha
-
-		# now the sha is set
-		#assert len(istream.binsha) == 20
-		#assert self.repo.odb.has_object(istream.binsha)
-
-		##assert self.repo.odb.has_object('c7ba33f9e9ae8614f4e8318d043682d4beff1486'.decode('hex'))
-
-		# stream = StringIO()
-		# stream.write("foobartjes")
-		# streamlen = stream.tell()
-		# stream.seek(0)
-
-		# istream = self.repo.odb.store(IStream('blob', streamlen, stream))
-		# print istream
-
-		# print '----loop----'
-		# for key in istream:
-		# 	print key
-			#print istream[key]
-		#obj = git.objects.base.IndexObject(self, )
+		index.write()
+		index.commit('added %s: %s'% (path, value))
 
 if __name__ == "__main__":
-	path = os.getcwd()
-	emit = Emit(repository=path)
+	cwd = os.getcwd()
+	emit = Emit(repository=cwd)
 	working_dir = emit.repo.working_dir
-	rel_path = os.path.relpath(path, working_dir)
+	rel_path = os.path.relpath(cwd, working_dir)
 
 	args = sys.argv[1:]
 
@@ -260,7 +194,12 @@ if __name__ == "__main__":
 		print '\tdebug       Print information'
 
 	if command == 'render':
-		emit.renderPath(rel_path)
+		path = rel_path
+		if len(args):
+			subpath	= args.pop(0)
+			path	= os.path.normpath(os.path.join(path, subpath))
+			
+		emit.renderPath(path)
 
 	if command == 'add':
 		path	= args.pop(0)
