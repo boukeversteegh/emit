@@ -3,6 +3,9 @@
 import os, sys
 import git, json
 
+class EmitException(Exception):
+	pass
+
 class Emit:
 	def __init__(self, repository):
 		repo = git.Repo(repository)
@@ -101,13 +104,39 @@ class Emit:
 		#print node
 		self.render(node)
 
+	def verifyJson(self, value):
+		try:
+			json.loads(value)
+		except ValueError as e:
+			raise EmitException('Invalid JSON value: %s' % value)
+
+	def remove(self, path):
+		#print self.head.commit.tree[path].data_stream.read()
+		tree = self.head.commit.tree
+		node = tree[path]
+
+		#self.
+		# index = git.IndexFile.from_tree(self.repo, tree)
+		index = self.repo.index # Cannot commit
+		# index = git.IndexFile(self.repo, '.git/index') # Cannot call 'remove' on indices that do not represent the default git index
+
+		print 'removing'
+		index.remove([path])
+		# print help(index.remove)
+
+		#print 'committing'
+		#new_commit = index.commit("removed %s" % path)
+		# for i in index.entries:
+		# 	print i
+
+		for node in self.head.commit.tree:
+			print node.name
+
 	def add(self, path, value):
-		#print path, value
-		#print repr(self.repo.index)
+		self.verifyJson(value)
 
 		from gitdb import IStream
 		from cStringIO import StringIO
-
 
 		# Create a stream for the value
 		istream = IStream("blob", len(value), StringIO(value))
@@ -115,55 +144,64 @@ class Emit:
 		# Store in Repository
 		self.repo.odb.store(istream)
 
-
-		#print dir(self.repo.index)
-		tree = self.repo.head.commit.tree
-		#tree = self.repo.tree()
+		directory	= path.split('/')
+		name		= directory.pop()
+		directory	= '/'.join(directory)
 
 		binsha	= istream.binsha
 		hexsha	= istream.hexsha
 		mode	= 33188
-		name	= path.split('/').pop()
 
-		#tmod = git.objects.tree.TreeModifier(tree.cache)
-		#tmod.add(binsha, mode, name)
-		#tmod.set_done()
+		try:
+			#tree = self.repo.head.commit.tree[directory]
+			pass
+		except KeyError:
+			pass
+			#tree = git.objects.tree.Tree(self.repo)
+			#tree = self.repo.head.commit.tree
 
-		#for blob in tree.blobs:
-		#	tree.cache.add(blob.binsha, blob.mode, blob.name)
+			#tree.cache.add()
 
+			return
 
-		print '---'
-		for blob in tree.blobs:
-			print ' - %s' % blob
+		#print "TREE:"
+		#for node in tree:
+		#	print ' - %s' % node.name
 
-		tree.cache.add(binsha, mode, name)
-		tree.cache.set_done()
+		#tree.cache.add(binsha, mode, name)
+		#tree.cache.set_done()
 
 		#tmp_index = git.IndexFile(self.repo, '.git/index')
-		tmp_index = git.IndexFile.from_tree(self.repo, tree)
+		tmp_index = git.IndexFile.from_tree(self.repo, self.repo.head.commit.tree)
 
-		print 'adding: %s' % hexsha
+		print ' adding: %s' % hexsha
 		blob = self.repo.rev_parse(hexsha)
 		blob.path = path
 		blob.mode = mode
 
 		tmp_index.add([blob])
 
-		print tmp_index.path
+		tree = tmp_index.write_tree()
+
+
+		# print tmp_index.path
+		print "INDEX:"
 		for e in tmp_index.entries:
-			print e, type(tmp_index.entries[e])
+			print e
 
 
 		# Writing to index, and then committing from git commit, doesn't work :-S
-		#tmp_index.write('.git/index')
-		tmp_index.commit('added %s:%s'% (path, value))
 
+		print " committing"
+		tmp_index.commit('added %s: %s'% (path, value))
+
+
+		##tmp_index.write('./git/index')
 
 		#return 
-		print '---'
+		print "TREE:"
 		for entry in tree:
-			print ' - %s: %s' % (entry.name, entry.hexsha)
+			print ' - %s:\t%s' % (entry.name, entry.hexsha)
 
 			# self.render(tree)
 
@@ -226,16 +264,42 @@ if __name__ == "__main__":
 
 	if command == 'add':
 		path	= args.pop(0)
+		path	= os.path.normpath(os.path.join(rel_path, path))
 		value	= args.pop(0)
-		emit.add(os.path.normpath(os.path.join(rel_path, path)), value)
+		emit.add(path, value)
 
 	if command == 'patch':
 		patch = args.pop(0)
 		emit.patch(path)
 
+	if command == 'remove':
+		path	= args.pop(0)
+		path	= os.path.normpath(os.path.join(rel_path, path))
+		emit.remove(path)
+
 	if command == 'debug':
 		#print 'Arg:	        %s' % os.path.normpath(os.path.join(path, sys.argv[2]))
-		print 'Path:        %s' % path
-		print 'Working dir: %s' % working_dir
-		print 'Relpath:     %s' % rel_path
-		
+		if len(args):
+			subject = args.pop(0)
+			if subject == 'index':
+				index = emit.repo.index
+				entries = [item[0] for item in index.entries]
+				entries.sort()
+				for entry in entries:
+					print entry
+				#for item in index.entries:
+				#	print item
+			if subject == 'tree':
+				tree = emit.repo.head.commit.tree
+				if len(args):
+					tree = tree[args.pop(0)]
+				for node in tree:
+					if node.type == 'tree':
+						print "+ %s" % node.name
+					if node.type == 'blob':
+						print "  %s" % node.name
+		else:
+			print 'Path:        %s' % path
+			print 'Working dir: %s' % working_dir
+			print 'Relpath:     %s' % rel_path
+			
