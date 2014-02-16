@@ -28,6 +28,17 @@ class Emit:
 		# Traverse Tree
 		# for entry in hct.traverse():
 
+	def nodeType(self, node):
+		if node.type == 'blob':
+			data = json.load(node.data_stream)
+			return type(data)
+		elif node.type == 'tree':
+			for (index, entry) in enumerate(node):
+				if str(index) != entry.name:
+					return dict
+			return list
+
+
 	def getJson(self, node=None, pretty=True, depth=0):
 		if node is None:
 			node = self.repo.head.commit.tree
@@ -96,12 +107,14 @@ class Emit:
 			sys.stdout.write(buff)
 
 	def renderPath(self, path):
-		if path == '.':
-			node = self.head.commit.tree
-		else:
-			node = self.head.commit.tree[path]
-		#print node
+		node = self.getNode(path)
 		self.render(node)
+
+	def getNode(self, path):
+		if path == '.':
+			return self.head.commit.tree
+		else:
+			return self.head.commit.tree[path]
 
 	def parseJson(self, value):
 		try:
@@ -109,7 +122,7 @@ class Emit:
 		except ValueError as e:
 			raise EmitException('Invalid JSON value: %s' % value)
 
-	def remove(self, path):
+	def remove(self, path, commit=True):
 		tree = self.head.commit.tree
 		node = tree[path]
 
@@ -119,26 +132,38 @@ class Emit:
 		index.remove([path], r=True)
 		index.write()
 
-		commit = index.commit("removed %s" % path)
+		if commit:
+			commit = index.commit("removed %s" % path)
 
 
 	def commit(self, message=''):
 		index = self.repo.index
+		print 'Commit: %s' % message
 		index.commit(message)
+
+	def exists(self, path):
+		return path in self.repo.head.commit.tree
 
 	def add(self, path, value, commit=True):
 		jsonobject = self.parseJson(value)
-
-		# if type(json) in [list, dict]:
-		# 	commit = False
 
 		if type(jsonobject) == dict:
 			for key in jsonobject:
 				subpath		= os.path.join(path, key)
 				subvalue	= json.dumps(jsonobject[key])
 				self.add(subpath, subvalue, commit=False)
-				print 'Adding %s: %s' % (subpath, subvalue)
+				# print 'Adding %s: %s' % (subpath, subvalue)
 			self.commit('adding Json object %s: %s' % (path, value))
+			return
+
+		if type(jsonobject) == list:
+			if self.exists(path):
+				self.remove(path)
+			for (index, item) in enumerate(jsonobject):
+				subpath		= os.path.join(path, str(index))
+				subvalue	= json.dumps(item)
+				self.add(subpath, subvalue, commit=False)
+			self.commit('adding "%s": %s' % (path, value))
 			return
 
 		from gitdb import IStream
@@ -160,7 +185,7 @@ class Emit:
 
 		index = self.repo.index
 
-		print ' adding: %s, %s' % (name, hexsha)
+		print ' Adding: %s: %s' % (path, value)
 		blob = self.repo.rev_parse(hexsha)
 		blob.path = path
 		blob.mode = mode
@@ -173,15 +198,28 @@ class Emit:
 		# Flushing index changes index, committing. Will create new tree.
 		#print " committing"
 		index.write()
-		index.commit('added %s: %s'% (path, value))
+		if commit:
+			index.commit('added %s: %s'% (path, value))
+
+	def patch(self, patchstring):
+		patch	= self.parseJson(patchstring)
+		op		= patch['op']
+		path	= patch['path']
+
+		if op == 'add':
+			if self.exists(path):
+				pass
+			else:
+				pass
+
 
 if __name__ == "__main__":
-	cwd = os.getcwd()
-	emit = Emit(repository=cwd)
-	working_dir = emit.repo.working_dir
-	rel_path = os.path.relpath(cwd, working_dir)
+	cwd			= os.getcwd()
+	emit		= Emit(repository=cwd)
+	working_dir	= emit.repo.working_dir
+	rel_path	= os.path.relpath(cwd, working_dir)
 
-	args = sys.argv[1:]
+	args		= sys.argv[1:]
 
 	if len(args) == 0:
 		command = 'help'
@@ -214,8 +252,8 @@ if __name__ == "__main__":
 		emit.add(path, value)
 
 	if command == 'patch':
-		patch = args.pop(0)
-		emit.patch(path)
+		patchstring = args.pop(0)
+		emit.patch(patchstring)
 
 	if command == 'remove':
 		path	= args.pop(0)
@@ -252,6 +290,10 @@ if __name__ == "__main__":
 				print dir(index)
 			if subject == 'head':
 				print emit.repo.head.reference
+			if subject == 'type':
+				path = args.pop(0)
+				node = emit.getNode(path)
+				print emit.nodeType(node)
 		else:
 			print 'Path:        %s' % path
 			print 'Working dir: %s' % working_dir
