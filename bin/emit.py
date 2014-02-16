@@ -33,32 +33,33 @@ class Emit:
 			node = self.repo.head.commit.tree
 
 		if pretty:
-			indent = '  '
-			keyvalue_separator = ': '
-			value_separator = ',\n'
+			indent				= '  '
+			keyvalue_separator	= ': '
+			value_separator		= ',\n'
+			list_open			= '[\n'
+			dict_open			= '{\n'
 		else:
-			indent = ''
-			keyvalue_separator = ':'
-			value_separator = ','
+			list_open			= '['
+			dict_open			= '{'
+			indent				= ''
+			keyvalue_separator	= ':'
+			value_separator		= ','
 
 		if node.type == 'blob':
 			yield node.data_stream.read().rstrip('\n')
 
 		if node.type == 'tree':
-			islist = True
-			maxkeylen = 0
+			islist		= True
+			maxkeylen	= 0
 			for index, entry in enumerate(node):
 				maxkeylen = max(maxkeylen, len(entry.name))
 				if str(index) != entry.name:
 					islist = False
 
 			if islist:
-				yield '['
+				yield list_open
 			else:
-				yield '{'
-
-			if pretty:
-				yield '\n'
+				yield dict_open
 
 			nentries = len(node)
 			for index, entry in enumerate(node):
@@ -102,38 +103,43 @@ class Emit:
 		#print node
 		self.render(node)
 
-	def verifyJson(self, value):
+	def parseJson(self, value):
 		try:
-			json.loads(value)
+			return json.loads(value)
 		except ValueError as e:
 			raise EmitException('Invalid JSON value: %s' % value)
 
 	def remove(self, path):
-		#print self.head.commit.tree[path].data_stream.read()
 		tree = self.head.commit.tree
 		node = tree[path]
 
-		#self.
-		# index = git.IndexFile.from_tree(self.repo, tree)
 		index = self.repo.index # Cannot commit
-		# index = git.IndexFile(self.repo, '.git/index') # Cannot call 'remove' on indices that do not represent the default git index
 
-		print 'removing'
+		print 'removing %s' % path
 		index.remove([path], r=True)
 		index.write()
 
-		# print help(index.remove)
+		commit = index.commit("removed %s" % path)
 
-		#print 'committing'
-		new_commit = index.commit("removed %s" % path)
-		# for i in index.entries:
-		# 	print i
 
-		for node in self.head.commit.tree:
-			print node.name
+	def commit(self, message=''):
+		index = self.repo.index
+		index.commit(message)
 
-	def add(self, path, value):
-		self.verifyJson(value)
+	def add(self, path, value, commit=True):
+		jsonobject = self.parseJson(value)
+
+		# if type(json) in [list, dict]:
+		# 	commit = False
+
+		if type(jsonobject) == dict:
+			for key in jsonobject:
+				subpath		= os.path.join(path, key)
+				subvalue	= json.dumps(jsonobject[key])
+				self.add(subpath, subvalue, commit=False)
+				print 'Adding %s: %s' % (subpath, subvalue)
+			self.commit('adding Json object %s: %s' % (path, value))
+			return
 
 		from gitdb import IStream
 		from cStringIO import StringIO
@@ -165,7 +171,7 @@ class Emit:
 		#tree = index.write_tree()
 
 		# Flushing index changes index, committing. Will create new tree.
-		print " committing"
+		#print " committing"
 		index.write()
 		index.commit('added %s: %s'% (path, value))
 
@@ -216,6 +222,10 @@ if __name__ == "__main__":
 		path	= os.path.normpath(os.path.join(rel_path, path))
 		emit.remove(path)
 
+	if command == 'commit':
+		message = args.pop(0)
+		emit.commit(message)
+
 	if command == 'debug':
 		#print 'Arg:	        %s' % os.path.normpath(os.path.join(path, sys.argv[2]))
 		if len(args):
@@ -237,6 +247,11 @@ if __name__ == "__main__":
 						print "+ %s" % node.name
 					if node.type == 'blob':
 						print "  %s" % node.name
+			if subject == 'notes':
+				index = emit.repo.index
+				print dir(index)
+			if subject == 'head':
+				print emit.repo.head.reference
 		else:
 			print 'Path:        %s' % path
 			print 'Working dir: %s' % working_dir
