@@ -3,16 +3,22 @@ import jsonpointer # easy_install jsonpointer
 
 class EmitValue:
     """ Wraps a Blob or Tree """
-    def __init__(self, entry):
-        self.entry = entry
+    def __init__(self, entry, emitdb):
+        self.entry  = entry
+        self.emitdb = emitdb
     
     @property
     def type(self):
         """ Returns Python-type for parsed value """
         if self.entry.type == 'blob':
-            data = json.load(self.entry.data_stream)
+            try:
+                data = json.load(self.entry.data_stream)
+            except ValueError:
+                raise ValueError("Invalid JSON object: %s" % self.entry.data_stream.read())
             return type(data)
         elif self.entry.type == 'tree':
+            if len(self.entry) == 0:
+                return dict
             for (index, subentry) in enumerate(self.entry):
                 if str(index) != subentry.name:
                     return dict
@@ -20,14 +26,24 @@ class EmitValue:
 
     def __getitem__(self, key):
         if self.entry.type == 'tree':
-            return EmitValue(self.entry[key])
+            return EmitValue(self.entry[key], self.emitdb)
+
+    def __setitem__(self, key, value):
+        #print self.entry.name
+        print "SETTING ITEM"
+        #print "name = %s" % repr(self.entry.name)
+        print "%s = %s" % (repr(self.entry.path), json.dumps(value))
+
+        blob = self.emitdb.storeBlob(json.dumps(value), path='/'.join([self.entry.path, key]))
+        self.emitdb.repo.index.add([blob])
+
 
     def __repr__(self):
         return self.json
 
     @property
     def values(self):
-        return [EmitValue(entry) for entry in self.entry]
+        return [EmitValue(entry, self) for entry in self.entry]
 
     @property
     def index(self):
@@ -59,11 +75,7 @@ class EmitValue:
             indent              = '  '
             keyvalue_separator  = ': '
             value_separator     = ',\n'
-            list_open           = '[\n'
-            dict_open           = '{\n'
         else:
-            list_open           = '['
-            dict_open           = '{'
             indent              = ''
             keyvalue_separator  = ':'
             value_separator     = ','
@@ -72,15 +84,27 @@ class EmitValue:
             yield self.entry.data_stream.read().rstrip('\n')
 
         if self.entry.type == 'tree':
-            if pretty:
-                maxkeylen = max([len(value.name) for value in self.values])
+            nentries = len(self.entry)
 
             if self.type == list:
-                yield list_open
+                tag_open  = '['
+                tag_close = ']'
             else:
-                yield dict_open
+                tag_open  = '{'
+                tag_close = '}'
 
-            nentries = len(self.entry)
+            if pretty and nentries:
+                tag_open += '\n'
+
+            if pretty:
+                if len(self.values):
+                    maxkeylen = max([len(value.name) for value in self.values])
+                else:
+                    maxkeylen = 0
+
+            yield tag_open
+
+            
             
             for index, value in enumerate(self.values):
                 yield indent * (depth+1)
@@ -100,7 +124,7 @@ class EmitValue:
                 if not islast:
                     yield value_separator
 
-            if pretty:
+            if pretty and nentries:
                 yield '\n'
                 if self.entry.path != '':
                     yield indent * (depth)
@@ -113,7 +137,7 @@ class EmitValue:
     def __iter__(self):
         etype = self.type
         if etype == list:
-            return iter([EmitValue(entry) for entry in self.entry])
+            return iter([EmitValue(entry, self) for entry in self.entry])
         if etype == dict:
             return iter(entry.name for entry in self.entry)
 

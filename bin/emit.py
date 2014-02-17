@@ -3,164 +3,95 @@
 import os
 import sys
 import git
-import json
 import argparse
 
-from emitvalue import EmitValue
-
-class EmitException(Exception):
-    pass
-
-class EmitDb:
-    """Represents a JsonDatabase using GitRepository as a backend"""
-    def __init__(self, repo):
-        self.repo   = repo
-        self.head   = repo.head
-        self.master = repo.head.reference
-
-        head   = repo.head
-        master = head.reference
-        hc     = repo.head.commit
-        hct    = hc.tree
-
-    def nodeType(self, node):
-        if node.type == 'blob':
-            data = json.load(node.data_stream)
-            return type(data)
-        elif node.type == 'tree':
-            for (index, entry) in enumerate(node):
-                if str(index) != entry.name:
-                    return dict
-            return list
-
-
-    def getJson(self, node=None, pretty=True, depth=0):
-        if node is None:
-            node = self.repo.head.commit.tree
-        gitjson = EmitValue(node)
-        return gitjson.json
-
-    def render(self, node=None):
-        for buff in self.getJson(node):
-            sys.stdout.write(buff)
-
-    def renderPath(self, path):
-        node = self.getNode(path)
-        self.render(node)
-
-    def getNode(self, path):
-        if path == '.':
-            return self.head.commit.tree
-        else:
-            return self.head.commit.tree[path]
-
-    def parseJson(self, value):
-        try:
-            return json.loads(value)
-        except ValueError as e:
-            raise EmitException('Invalid JSON value: %s' % value)
-
-    def remove(self, path, commit=True):
-        tree = self.head.commit.tree
-        node = tree[path]
-
-        index = self.repo.index # Cannot commit
-
-        print 'removing %s' % path
-        index.remove([path], r=True)
-        index.write()
-
-        if commit:
-            commit = index.commit("removed %s" % path)
-
-
-    def commit(self, message=''):
-        index = self.repo.index
-        print 'Commit: %s' % message
-        index.commit(message)
-
-    def exists(self, path):
-        return path in self.repo.head.commit.tree
-
-    def add(self, path, value, commit=True):
-        jsonobject = self.parseJson(value)
-
-        if isinstance(jsonobject, dict):
-            for key in jsonobject:
-                subpath     = os.path.join(path, key)
-                subvalue    = json.dumps(jsonobject[key])
-                self.add(subpath, subvalue, commit=False)
-                # print 'Adding %s: %s' % (subpath, subvalue)
-            self.commit('adding Json object %s: %s' % (path, value))
-            return
-
-        if isinstance(jsonobject, list):
-            if self.exists(path):
-                self.remove(path)
-            for (index, item) in enumerate(jsonobject):
-                subpath     = os.path.join(path, str(index))
-                subvalue    = json.dumps(item)
-                self.add(subpath, subvalue, commit=False)
-            self.commit('adding "%s": %s' % (path, value))
-            return
-
-        from gitdb import IStream
-        from cStringIO import StringIO
-
-        # Create a stream for the value
-        istream = IStream("blob", len(value), StringIO(value))
-
-        # Store in Repository
-        self.repo.odb.store(istream)
-
-        directory   = path.split('/')
-        name        = directory.pop()
-        directory   = '/'.join(directory)
-
-        binsha  = istream.binsha
-        hexsha  = istream.hexsha
-        mode    = 33188
-
-        index = self.repo.index
-
-        print ' Adding: %s: %s' % (path, value)
-        blob = self.repo.rev_parse(hexsha)
-        blob.path = path
-        blob.mode = mode
-
-        index.add([blob])
-
-        # Not needed. Useful to get tree from modified index
-        #tree = index.write_tree()
-
-        # Flushing index changes index, committing. Will create new tree.
-        #print " committing"
-        index.write()
-        if commit:
-            index.commit('added %s: %s'% (path, value))
-
-    def patch(self, patchstring):
-        patch   = self.parseJson(patchstring)
-        op      = patch['op']
-        path    = patch['path']
-
-        if op == 'add':
-            if self.exists(path):
-                pass
-            else:
-                pass
-
+from emitdb import EmitDb
+from gitdb import IStream
 
 if __name__ == "__main__":
-    #parser = argparse.ArgumentParser()
-    #parser.add_argument('render', 'Render database into JSON')
-    #parser.parse_args()
-
-    #sys.exit(0)
-
+    # Initialize EmitDb
     cwd         = os.getcwd()
     repo        = git.Repo(cwd)
     emitdb      = EmitDb(repo=repo)
+
+    # Define arguments
+    parser = argparse.ArgumentParser()
+    commands_parser = parser.add_subparsers(dest="command")
+
+    commands = {}
+
+    arguments = {
+        'value': dict(
+            help="""JavaScript Object Notation (JSON) string
+
+See http://tools.ietf.org/html/rfc4627""",
+            metavar='<value>'
+        ),
+        'pointer': dict(
+            help="""String identifying a specific value within a JSON document.
+
+Example:    {"foo": {"bar": 10}, "list": ["a","b","c]}
+ ""         // whole document
+ "/foo/bar" 10
+ "/list/0   "a"
+
+See: http://tools.ietf.org/html/rfc6901
+""",
+            metavar='<path>'
+        ),
+        'patch': dict(
+            help="""JSON document structure for expressing a
+sequence of operations to apply to a JSON document
+
+Example:
+{"op": "add", "path": "/a/b/c", "value": ["foo", "bar"]}
+
+See: http://tools.ietf.org/html/rfc6902""",
+            metavar='<patch>'
+        )
+    }
+
+    def add_command(name, **kwargs):
+        parser = commands_parser.add_parser(name, **dict(kwargs, formatter_class=argparse.RawTextHelpFormatter))
+        commands[name] = parser
+        return parser
+
+    # render [<pointer>]
+    add_command('render')
+    commands['render'].add_argument('pointer', **dict(arguments['pointer'], nargs='?', default=''))
+
+    # add <pointer> <value>
+    add_command('add')
+    commands['add'].add_argument('pointer', **arguments['pointer'])
+    commands['add'].add_argument('value', **arguments['value'])
+
+    # remove <pointer>
+    add_command('remove')
+    commands['remove'].add_argument('pointer', **arguments['pointer'])
+
+    # patch <patch>
+    add_command('patch')
+    commands['patch'].add_argument('patch', **dict(arguments['patch'], nargs='+'))
+
+    # parse
+    options = parser.parse_args()
+
+    if options.command == 'render':
+        pointer = options.pointer
+        value = emitdb.resolve(pointer)
+        print value
+
+    if options.command == 'add':
+        pointer = options.pointer
+        jsonvalue = options.value
+        #item = emitdb.resolve(pointer)
+        #print item.entry.path
+        emitdb.add(pointer, jsonvalue)
+
+        print emitdb.tree
+
+    sys.exit(0)
+
     working_dir = emitdb.repo.working_dir
     rel_path    = os.path.relpath(cwd, working_dir)
 
