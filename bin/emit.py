@@ -19,6 +19,7 @@ if __name__ == "__main__":
     commands_parser = parser.add_subparsers(dest="command")
 
     commands = {}
+    subparsers = {}
 
     arguments = {
         'value': dict(
@@ -73,6 +74,15 @@ See: http://tools.ietf.org/html/rfc6902""",
     add_command('patch')
     commands['patch'].add_argument('patch', **dict(arguments['patch'], nargs='+'))
 
+    # debug <topic>
+    add_command('debug')
+    subparsers['debug'] = commands['debug'].add_subparsers(dest='topic')
+    topics = {
+        'pointer': subparsers['debug'].add_parser('pointer', formatter_class=argparse.RawTextHelpFormatter),
+        'index':   subparsers['debug'].add_parser('index', formatter_class=argparse.RawTextHelpFormatter),
+    }
+    topics['pointer'].add_argument('pointer', **dict(arguments['pointer']))
+
     # parse
     options = parser.parse_args()
 
@@ -88,9 +98,30 @@ See: http://tools.ietf.org/html/rfc6902""",
         #print item.entry.path
         emitdb.add(pointer, jsonvalue)
 
-        print emitdb.tree
+        #print emitdb.tree
+
+    if options.command == 'remove':
+        pointer = options.pointer
+        emitdb.remove(pointer)
+
+    if options.command == 'debug':
+        if options.topic == 'pointer':
+            import jsonpointer, emitvalue
+            pointer = jsonpointer.JsonPointer(options.pointer)
+            entry   = emitdb.getNode('.')
+            value   = emitvalue.EmitValue(entry, repo).resolve(pointer)
+
+            print "path:  %s" % value.entry.path
+            print "value: %s" % value
+            print "hash:  %s" % value.entry
+            #print value
+        if options.topic == 'index':
+            for entry, _ in sorted(emitdb.repo.index.entries):
+                print entry
+            pass
 
     sys.exit(0)
+    #/////////////////////////
 
     working_dir = emitdb.repo.working_dir
     rel_path    = os.path.relpath(cwd, working_dir)
@@ -139,6 +170,7 @@ See: http://tools.ietf.org/html/rfc6902""",
     if command == 'commit':
         message = args.pop(0)
         emitdb.commit(message)
+
     if command == 'resolve':
         pointer = args.pop(0)
         gitjson = EmitValue(emitdb.repo.head.commit.tree)

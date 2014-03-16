@@ -18,10 +18,9 @@ class EmitDb:
         self.head   = repo.head
         self.master = repo.head.reference
 
-        head   = repo.head
-        master = head.reference
-        hc     = repo.head.commit
-        hct    = hc.tree
+        #head   = repo.head
+        #hc     = repo.head.commit
+        #hct    = repo.head.commit.tree
 
     @property
     def tree(self):
@@ -53,18 +52,52 @@ class EmitDb:
         except ValueError as e:
             raise EmitException('Invalid JSON value: %s' % jsonstring)
 
-    def remove(self, path, commit=True):
-        tree = self.head.commit.tree
-        node = tree[path]
+    def remove(self, pointer, commit=True):
+        if not isinstance(pointer, jsonpointer.JsonPointer):
+            pointer = jsonpointer.JsonPointer(pointer)
 
-        index = self.repo.index # Cannot commit
+        if len(pointer.parts) > 1:
+            parentpointer = jsonpointer.JsonPointer('/' + '/'.join(pointer.parts[:-1]))
+        else:
+            parentpointer = pointer
 
-        print 'removing %s' % path
-        index.remove([path], r=True)
-        index.write()
 
-        if commit:
-            commit = index.commit("removed %s" % path)
+        tree = EmitValue(self.head.commit.tree, self.repo)
+        parent = parentpointer.resolve(tree)
+        node = pointer.resolve(tree)
+
+        print 'removing %s' % node.entry.path
+
+        bare = self.repo.bare
+        
+        if bare:
+            getentry = git.index.typ.BaseIndexEntry.from_blob
+
+            def subpath(parent, child):
+                return (parent == child) or (child.startswith(parent) and child[len(parent)] == '/')
+
+            blobs = [getentry(e) for e in parent.entry.blobs if not subpath(node.entry.path, e.path)]
+            trees = [getentry(e) for e in parent.entry.trees if not subpath(node.entry.path, e.path)]
+
+            entries = trees+blobs
+            class SL: pass
+            sl = SL()
+            sl.start = 0
+            sl.stop = len(entries)
+            r = git.index.fun.write_tree_from_cache(entries, self.repo.odb, sl=sl,si=0)
+
+            ntree = git.objects.tree.Tree(self.repo, r[0], path='', mode=16384)
+            if commit:
+                git.objects.commit.Commit.create_from_tree(self.repo, ntree, "!!! removed %s from Bare repo" % node.entry.path, head=True)
+
+            return
+        else:
+            index = self.repo.index
+            index.remove([node.entry.path], r=True)
+            index.write()
+            if commit:
+                index.commit("removed %s" % node.entry.path)
+
 
 
     def commit(self, message=''):
@@ -102,7 +135,7 @@ class EmitDb:
 
         if isinstance(value, dict):
             for key in value:
-                subpath     = os.path.join(path, key)
+                subpath     = '/' + os.path.join(path, key)
                 subvalue    = json.dumps(value[key])
                 self.add(subpath, subvalue, commit=False)
             self.commit('adding Json object %s: %s' % (path, value))
@@ -112,7 +145,7 @@ class EmitDb:
             if self.exists(path):
                 self.remove(path)
             for (index, item) in enumerate(value):
-                subpath     = os.path.join(path, str(index))
+                subpath     = '/' + os.path.join(path, str(index))
                 subvalue    = json.dumps(item)
                 self.add(subpath, subvalue, commit=False)
             self.commit('adding "%s": %s' % (path, jsonstring))
